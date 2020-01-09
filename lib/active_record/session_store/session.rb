@@ -48,7 +48,11 @@ module ActiveRecord
               class << self; remove_possible_method :find_by_session_id; end
 
               def self.find_by_session_id(session_id)
-                where(session_id: session_id).first
+                if session_id.is_a?(Rack::Session::SessionId)
+                  where(session_id: session_id.private_id).first
+                else
+                  where(session_id: session_id).first
+                end
               end
             end
           end
