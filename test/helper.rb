@@ -20,34 +20,64 @@ module ActionDispatch
   end
 end
 
+class RoutedRackApp
+  class Config < Struct.new(:middleware)
+  end
+
+  attr_reader :routes
+
+  def initialize(routes, &blk)
+    @routes = routes
+    @stack = ActionDispatch::MiddlewareStack.new(&blk)
+    @app = @stack.build(@routes)
+  end
+
+  def call(env)
+    @app.call(env)
+  end
+
+  def config
+    Config.new(@stack)
+  end
+end
+
 class ActionDispatch::IntegrationTest < ActiveSupport::TestCase
   include ActionDispatch::SharedRoutes
 
   def self.build_app(routes = nil)
     RoutedRackApp.new(routes || ActionDispatch::Routing::RouteSet.new) do |middleware|
       middleware.use ActionDispatch::DebugExceptions
+      middleware.use ActionDispatch::ActionableExceptions
       middleware.use ActionDispatch::Callbacks
       middleware.use ActionDispatch::Cookies
       middleware.use ActionDispatch::Flash
+      middleware.use Rack::MethodOverride
       middleware.use Rack::Head
       yield(middleware) if block_given?
     end
   end
 
+  self.app = build_app
+
   private
 
-    def with_test_route_set(options = {})
+    def session_options(options = {})
+      (@session_options ||= {key: "_session_id"}).merge!(options)
+    end
+
+    def app
+      @app ||= self.class.build_app do |middleware|
+        middleware.use ActionDispatch::Session::ActiveRecordStore, session_options
+      end
+    end
+
+    def with_test_route_set
       controller_namespace = self.class.to_s.underscore
       actions = %w[set_session_value get_session_value call_reset_session renew get_session_id]
 
       with_routing do |set|
         set.draw do
           actions.each { |action| get action, controller: "#{controller_namespace}/test" }
-        end
-
-        @app = self.class.build_app(set) do |middleware|
-          middleware.use ActionDispatch::Session::ActiveRecordStore, options.reverse_merge(:key => '_session_id')
-          middleware.delete ActionDispatch::ShowExceptions
         end
 
         yield
@@ -61,18 +91,12 @@ class ActionDispatch::IntegrationTest < ActiveSupport::TestCase
     ensure
       ActionDispatch::Session::ActiveRecordStore.session_class = session_class
     end
-end
 
-class RoutedRackApp
-  attr_reader :routes
+  # Patch in support for with_routing for integration tests, which was introduced in Rails 7.2
+  if !defined?(ActionDispatch::Assertions::RoutingAssertions::WithIntegrationRouting)
+    require_relative 'with_integration_routing_patch'
 
-  def initialize(routes, &blk)
-    @routes = routes
-    @stack = ActionDispatch::MiddlewareStack.new(&blk).build(@routes)
-  end
-
-  def call(env)
-    @stack.call(env)
+    include WithIntegrationRoutingPatch
   end
 end
 
